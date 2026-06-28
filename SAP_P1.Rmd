@@ -1,0 +1,638 @@
+---
+title: "Analiza glazbenih preferencija i njihovog utjecaja na mentalno
+zdravlje"
+author: "Ivan Golubić, Vilim Hrupelj, Marin Rossini, Benjamin Teskera"
+date: "2024-12-13"
+output: pdf_document
+---
+
+```{r include=FALSE}
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(car)
+library(FSA)
+library(nortest)
+library(fastDummies)
+library(gridExtra)
+knitr::opts_chunk$set(results = 'hold')
+```
+
+## Učitavanje podataka
+
+Učitavanje podataka u data frame
+
+```{r}
+music <- read_csv("Datasets/Music and mental health dataset.csv")
+head(music, 10)
+#glimpse(music)
+cat("-------\n")
+sum(is.na(music$BPM))
+```
+
+Budući da stupac BPM ima čak 107 NA vrijednosti, umjesto da maknemo retke gdje je BPM NA odlučili smo ukloniti taj stupac jer bi 107 redaka bilo previše za izgubiti u skupu podataka s 736 vrijednosti.
+
+Budući da ostali stupci nemaju toliko NA vrijednosti, odlučili smo izbaciti retke gdje se pojavljuje neka NA vrijednost.
+
+### Uklanjanje NA vrijednosti
+
+```{r}
+ver1 <- music %>% select(-BPM, -Permissions) %>% na.omit()
+```
+
+Imamo puno stupaca s kategorijskim vrijednostima ili samo sa vrijednostima Da/Ne koje trebamo faktorizirati.
+
+### Faktoriziranje kategorijskih varijabli
+
+```{r}
+ver1$`While working` <- factor(ver1$`While working`, levels = c("No", "Yes")) %>% as.numeric() - 1
+ver1$Instrumentalist <- factor(ver1$Instrumentalist, levels = c("No", "Yes")) %>% as.numeric() - 1
+ver1$Composer <- factor(ver1$Composer, levels = c("No", "Yes")) %>% as.numeric() - 1
+ver1$Exploratory <- factor(ver1$Exploratory, levels = c("No", "Yes")) %>% as.numeric() - 1
+ver1$`Foreign languages` <- factor(ver1$`Foreign languages`, levels = c("No", "Yes")) %>% as.numeric() - 1
+ver1$`Music effects` <- factor(ver1$`Music effects`, levels = c("Worsen", "No effect", "Improve")) %>% as.numeric() - 2
+
+ver2 <- ver1
+
+ver1 <- ver1 %>% 
+  mutate(across(starts_with("Frequency"), ~ as.numeric(factor(., levels = c("Never", "Rarely", "Sometimes", "Very frequently")))))
+```
+
+Sad kada su svi podaci numerizirani, možemo vidjeti neke osnovne statistike.
+
+## Sažetak statistika (summary)
+
+```{r}
+summary(ver1)
+```
+
+## 1. Slušaju li skladatelji više glazbe dnevno od drugih?
+
+Prvo pitanje koje ćemo proučiti je slušaju li skladatelji više glazbe dnevno od onih koji nisu skladatelji. Za to trebamo podijeliti podatke na one koji imaju vrijednost 1 za stupac *Composer* i one koji to nemaju i promotriti *Hours per day*.
+
+```{r}
+ComposerData <- ver1[ver1$Composer == 1, ]
+OthersData <- ver1[ver1$Composer == 0, ]
+ComposerDataHPD <- ComposerData$`Hours per day`
+OthersDataHPD <- OthersData$`Hours per day`
+```
+
+Prvo ćemo promotriti kako to izgleda u pravokutnom dijagramu.
+
+```{r}
+boxplot(`Hours per day` ~ Composer, 
+        data = ver1, 
+        main = "Usporedba sati slušanja glazbe skladatelja i onih koji to nisu",
+        xlab = "Skladatelj (0 = Ne, 1 = Da)", 
+        ylab = "Hours per day",
+        col = c("lightblue", "red"))
+```
+
+### Provjera normalnosti podataka
+
+Na prvu nam se čini da više glazbe slušaju oni koji su skladatelji, ali razlika nije velika i to moramo potvrditi.
+
+Sada trebamo promotriti ravnaju li se podaci po normalnoj razdiobi.
+
+```{r}
+qqnorm(ComposerDataHPD, main = "Broj sati slušanja glazbe skladatelja")
+qqline(ComposerDataHPD, col = "blue")
+```
+
+```{r}
+qqnorm(OthersDataHPD, main = "Broj sati slušanja glazbe ostalih")
+qqline(OthersDataHPD, col = "red")
+```
+
+```{r}
+hist(ComposerDataHPD, main = "Slušanje glazbe skladatelja", xlab = "Broj sati", ylab = "Frekvencija", col = "gray", border = "black", breaks = seq(0, max(ComposerDataHPD), by = 2))
+```
+
+```{r}
+hist(OthersDataHPD, main = "Slušanje glazbe ostalih", xlab = "Broj sati", ylab = "Frekvencija", col = "gray", border = "black", breaks = seq(0, max(OthersDataHPD), by = 2))
+```
+
+Iz qq-dijagrama i histograma možemo pretpostaviti da se podaci ne ravnaju prema normalnoj razdiobi, ali trebamo potvrditi pomoću Kolmogorov-Smirnov test.
+
+```{r}
+lillie.test(ComposerDataHPD)
+```
+
+```{r}
+lillie.test(OthersDataHPD)
+```
+
+Iz gore navedenih testova zaključujemo da se podaci ne ravnaju prema normalnoj razdiobi, ali zbog robustnosti t-testa mi ćemo nastaviti pod pretpostavkom da su normalni.
+
+### F test varijanci jednakosti varijanci
+
+Sljedeće što moramo je testirati imaju li uzorci jednake varijance.
+
+```{r}
+var.test(ComposerDataHPD, OthersDataHPD)
+```
+
+Budući da je p vrijednost manja od alfa = 0.05, možemo odbaciti hipotezu da su varijance jednake u korist alternativne hipoteze da nisu.
+
+### t-test za uzorke s nejednakim i nepoznatim varijancama
+
+Sada provodimo t-test za uzorke s nejednakim i nepoznatim varijancama.
+
+```{r}
+t.test(ComposerDataHPD, OthersDataHPD, alt = "greater", var.equal = FALSE)
+```
+
+Prema t-testu za alfa = 0.05 možemo odbaciti hipotezu H0 da su im srednje vrijednosti jednake u korist alternativne hipoteze H1 da je srednja vrijednost broja sati u kojima skladatelji slušaju glazbu veća od od srednje vrijednosti u kojima oni koji nisu skladatelji slušaju glazbu.
+
+### Mann-Whitney_Wilcoxonov test
+
+Budući da su podaci neparametarski, još ćemo provesti i Mann-Whitney-Wilcoxonov test, alternativni test t-testu, ali za neparametarske podatke.
+
+```{r}
+wilcox.test(ComposerDataHPD, OthersDataHPD, alternative = "greater")
+
+```
+
+Još jednom potvrđujemo da skladatelji slušaju više glazbe od ostalih, odnosno prema Mann-Whitney-Wilcoxonov testu odbacujemo hipotezu H0 da su distribucije količine slušanja glazbe jednake za skladatelje i ostale u korist hipoteze H1 da skladatelji slušaju više glazbe.
+
+## 2. Korelacije između frekvencija slušanja različitih glazbenih žanrova i samoprocijenjenih razina mentalnih poremećaja
+
+### Korelacija između žanrova i mentalnih poremećaja
+
+Idemo pokazati korelacije između slušanja nekog glazbenog žanra i samprocijenjene razine mentalnog poremećaja.
+
+```{r}
+genres <- ver1 %>% select(`Frequency [Classical]`, `Frequency [Country]`, `Frequency [EDM]`, `Frequency [Folk]`, `Frequency [Gospel]`, `Frequency [Hip hop]`, `Frequency [Jazz]`, `Frequency [K pop]`, `Frequency [Latin]`, `Frequency [Metal]`, `Frequency [Pop]`, `Frequency [R&B]`, `Frequency [Rap]`, `Frequency [Rock]`, `Frequency [Video game music]`, `Frequency [Lofi]`)
+
+mentalHealth <- ver1 %>% select(Anxiety, Depression, Insomnia, OCD)
+
+correlation_matrix <- cor(genres, mentalHealth, method = "spearman") %>% round(2)
+
+heatmap_data <- melt(correlation_matrix)
+
+ggplot(heatmap_data, aes(Var2, Var1, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0,
+                       limit = c(-0.2, 0.2), space = "Lab", 
+                       name = "Korelacija") +
+  geom_text(aes(label = round(value, 2)), color = "black", size = 3) +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Korelacija između glazbenih žanrova i mentalnih poremećaja",
+       x = "Mentalni poremećaji",
+       y = "Glazbeni žanrovi")
+```
+
+Na prvu djeluje da nema neke velike korelacije između određenog žanra i mentalnog poremećaja budući da je najveća korelacija 0.19.
+
+### Spearmanov test
+
+Sad ćemo testirati je li korelacija između frekvencije slušanja metala i samoprocijenjene razine depresije statistički značajna. Koristit ćemo Spearmanov neparametarski test iz razloga što on ne zahtjeva nikakvu distribuciju, za razliku od Personovog testa koji zahtjeva normalnu distribuciju.
+
+```{r}
+cor.test(ver1$`Frequency [Metal]`, ver1$Depression, method = "spearman")
+```
+
+Prema Spearmanov testu na značajnosti od alfa = 0.05 korelacija između frekvencije slušanja metal žanra i depresije je statistički značajna. rho = 0.188 označava korelaciju koja nije velika, ali ipak je statistički značajna. Porastom frekvencije slušanja metala blago će porasti samoprocijenjena razina depresije.
+
+## 3. Postoji li povezanost izmedu korištenog streaming servisa i sklonosti istraživanju?
+
+Sljedeće istraživačko pitanje na koje tražimo odgovor je postoji li povezanost između korištenog streaming servisa i sklonosti istraživanju. Za dobiti odgovor na ovo pitanje trebat ćemo provesti $\chi^2$ test nezavisnosti za kategorijske podatke.
+
+Promotrimo koji se sve streaming servisi nalaze u našem skupu podataka.
+
+```{r}
+ver1$`Primary streaming service` <- gsub("I do not use a streaming service.", "No streaming service", ver1$`Primary streaming service`)
+table(ver1$`Primary streaming service`)
+```
+
+Napravimo kontigencijsku tablicu.
+
+```{r}
+tbl = table(ver1[ver1$`Primary streaming service` == "Apple Music" | ver1$`Primary streaming service` == "No streaming service" | ver1$`Primary streaming service` == "Other streaming service" | ver1$`Primary streaming service` == "Pandora" | ver1$`Primary streaming service` == "Spotify" | ver1$`Primary streaming service` == "YouTube Music",]$`Primary streaming service`, 
+            ver1[ver1$`Primary streaming service` == "Apple Music" | ver1$`Primary streaming service` == "No streaming service" | ver1$`Primary streaming service` == "Other streaming service" | ver1$`Primary streaming service` == "Pandora" | ver1$`Primary streaming service` == "Spotify" | ver1$`Primary streaming service` == "YouTube Music",]$Exploratory)
+tbl
+```
+
+Podsjetimo, u stupcu *Exploratory*, 0 znači *Ne* i 1 znači *Da*. Nadogradimo tablicu da nam pišu sume vrijednosti.
+
+```{r}
+addmargins(tbl)
+added_margins_tbl <- addmargins(tbl)
+```
+
+Izračunajmo očekivane frekvencije. Pretpostavka korištenja *chisq.test()* je da su sve očekivane frekvencije veće ili jednake od 5.
+
+```{r}
+for (col_names in colnames(added_margins_tbl)){
+  for (row_names in rownames(added_margins_tbl)){
+    if (!(row_names == 'Sum' | col_names == 'Sum') ){
+      cat('Očekivane frekvencije za razred ',col_names,'-',row_names,': ',(added_margins_tbl[row_names,'Sum'] * added_margins_tbl['Sum',col_names]) / added_margins_tbl['Sum','Sum'],'\n')
+    }
+  }
+}
+```
+
+Budući da je očekivana frekvencija za razred 0 - Pandora manja od 5 ne možemo koristiti klasičan *chisq.test()*, već moramo koristiti Fisherov egzaktan test.
+
+### Fisherov egzaktan test
+
+Početne hipoteze:
+
+H0: ne postoji povezanost između korištenog streaming servisa i sklonosti istraživanju.
+
+H1: postoji povezanost između korištenog streaming servisa i sklonosti istraživanju.
+
+```{r}
+fisher.test(tbl, simulate.p.value = TRUE, B = 10000)
+```
+
+```{r}
+chisq.test(tbl)
+```
+
+Na značajnosti od alfa = 0.05 možemo odbaciti hipotezu H0 u korist hipoteze H1 koja tvrdi da postoji povezanost između korištenog streaming servisa i sklonosti istraživanju.
+
+## 4. Ovisnost prosječnog broja sati slušanja o različitim preferiranim žanrovima glazbe
+
+### Obrada podataka
+
+```{r}
+data_prime <- (ver1 %>% 
+  rename(
+    favorite = `Fav genre`,
+    hours = `Hours per day`
+  ))[c("hours", "favorite")]
+
+data_prime$favorite = factor(data_prime$favorite, 
+                             levels = c("Latin", "Lofi", "Gospel", "Rock", "Video game music", "Jazz", "R&B", "K pop", "Country", "EDM", "Hip hop", "Pop", "Rap", "Classical", "Metal", "Folk"),
+                             labels = c("Other", "Other", "Other", "Rock", "VGM", "Jazz", "RnB", "Kpop", "Country", "EDM", "HipHop", "Pop", "Rap", "Classical", "Metal", "Folk"))
+
+summary(data_prime)
+```
+
+```{r echo=FALSE, message=TRUE, warning=FALSE}
+data <- data_prime
+
+AvgTime <- data$hours
+FavGenre <- data$favorite
+
+# gornja i donja granica za izbacivanje ekstrema
+lower_bound <- quantile(AvgTime, 0.00)  #primjećujemo da nema donjih ekstrema
+upper_bound <- quantile(AvgTime, 0.90)
+
+# Izračun IQR-a
+Q1 <- quantile(AvgTime, 0.25)  # 1st quartile
+Q3 <- quantile(AvgTime, 0.75)  # 3rd quartile
+IQR <- Q3 - Q1
+
+# alternativno podrezivanje, zbog asimetrije u stršećim vrijednostima nismo ga odabrali
+#lower_bound <- Q1 - 1.5 * IQR
+#upper_bound <- Q3 + 1.5 * IQR
+
+#podrezani dataset
+trimmed_data <- data[AvgTime >= lower_bound & AvgTime <= upper_bound, ]
+
+AvgTime_t <- trimmed_data$hours
+FavGenre_t <- trimmed_data$favorite
+```
+
+### Provjera normalnosti i homogenosti varijanci
+
+Prvi test kojeg želimo isprobati jest ANOVA test koji je parametarski test za testiranje hipoteze o jednakosti srednjih vrijednosti između više kategorija podataka.
+
+No kako bi proveli ANOVA test moramo znati da podatci dolaze iz normalih distribucija otprilike jednakih varijanca. Zato koristimo sljedeće testove:
+
+```{r}
+print(paste("Testing: data"))
+
+print(
+  data %>%
+  group_by(data$favorite) %>%
+  summarise(Count = n(), Var = var(data$hours), AvgHours = mean(data$hours))
+)
+print("Overall test results:")
+
+print(paste("Total mean:", mean(data$hours)))
+
+#ANOVA pokušaj
+anova_result <- aov(data$hours ~ data$favorite)
+print(anova_result)
+
+#QQ plot
+qqnorm(residuals(anova_result))
+qqline(residuals(anova_result))
+
+#lillie test o normalnosti podataka
+print(lillie.test(data$hours))
+
+# Barlett i Levenin test jednakosti varijanca
+print(bartlett.test(data$hours ~ data$favorite))
+print(leveneTest(data$hours ~ data$favorite))
+
+```
+
+```{r}
+print(paste("Testing: trimmed_data"))
+
+print(
+  trimmed_data %>%
+  group_by(trimmed_data$favorite) %>%
+  summarise(Count = n(), Var = var(trimmed_data$hours), AvgHours = mean(trimmed_data$hours))
+)
+print("Overall test results:")
+
+print(paste("Total mean:", mean(trimmed_data$hours)))
+
+#ANOVA pokušaj
+anova_result <- aov(trimmed_data$hours ~ trimmed_data$favorite)
+print(anova_result)
+
+#QQ plot
+qqnorm(residuals(anova_result))
+qqline(residuals(anova_result))
+
+#lillie test o normalnosti podataka
+print(lillie.test(trimmed_data$hours))
+
+# Barlett i Levenin test jednakosti varijanca
+print(bartlett.test(trimmed_data$hours ~ trimmed_data$favorite))
+print(leveneTest(trimmed_data$hours ~ trimmed_data$favorite))
+```
+
+```{r}
+datasets <- list(data = data, trimmed_data = trimmed_data)
+h1 <- ggplot(datasets$data[datasets$data$favorite == "Rock", ], aes(x = hours)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(title = "Data - Rock Frequency", x = "Hours", y = "Count") +
+  theme_classic()
+
+print(paste("Test results for Rock in Data"))
+print(lillie.test(datasets$data$hours[datasets$data$favorite == "Rock"]))
+
+h2 <- ggplot(datasets$trimmed_data[datasets$trimmed_data$favorite == "Rock", ], aes(x = hours)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(title = "Trimmed Data - Rock Frequency", x = "Hours", y = "Count") +
+  theme_classic()
+
+print(paste("Test results for Rock in Trimmed Data"))
+print(lillie.test(datasets$trimmed_data$hours[datasets$trimmed_data$favorite == "Rock"]))
+
+grid.arrange(h1, h2)
+```
+
+```{r}
+h1 <- ggplot(datasets$data[datasets$data$favorite == "Rap", ], aes(x = hours)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(title = "Data - Rap Frequency", x = "Hours", y = "Count") +
+  theme_classic()
+
+print(paste("Test results for Rap in Data"))
+print(lillie.test(datasets$data$hours[datasets$data$favorite == "Rap"]))
+
+h2 <- ggplot(datasets$trimmed_data[datasets$trimmed_data$favorite == "Rap", ], aes(x = hours)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(title = "Trimmed Data - Rap Frequency", x = "Hours", y = "Count") +
+  theme_classic()
+
+print(paste("Test results for Rap in Trimmed Data"))
+print(lillie.test(datasets$trimmed_data$hours[datasets$trimmed_data$favorite == "Rap"]))
+
+grid.arrange(h1, h2)
+```
+
+```{r}
+h1 <- ggplot(datasets$data[datasets$data$favorite == "HipHop", ], aes(x = hours)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(title = "Data - HipHop Frequency", x = "Hours", y = "Count") +
+  theme_classic()
+
+print(paste("Test results for HipHop in Data"))
+print(lillie.test(datasets$data$hours[datasets$data$favorite == "HipHop"]))
+
+h2 <- ggplot(datasets$trimmed_data[datasets$trimmed_data$favorite == "HipHop", ], aes(x = hours)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(title = "Trimmed Data - HipHop Frequency", x = "Hours", y = "Count") +
+  theme_classic()
+
+print(paste("Test results for HipHop in Trimmed Data"))
+print(lillie.test(datasets$trimmed_data$hours[datasets$trimmed_data$favorite == "HipHop"]))
+
+grid.arrange(h1, h2)
+```
+
+Ovi rezultati na razini značajnosti od 1% upućuju na to da se ne radi o normalno distribuiranim podatcima, te vidimo da na individualnoj razini većina grupa doista značajno odstupa od normalne distribucije.\
+Također vidimo da kod nepodrezanih podataka homogenost varijance također ne prolazi testove.\
+No pomnijom analizom vidimo da je uzrok najvjerojatnije Rap kategorija koja jedina značajno odstupa od ostalih.\
+Relativno robustne metode vjerojatno će pretrpjeti ovakvo odstupanje, no normalnost je ovdje ipak značajno prekršena čak i kod podrezanih podataka, te ANOVA test nije primjenjiv.
+
+### Kurskal-Wallis Test
+
+Umjesto njega upotrebljavamo neparametarski Kruskal-Wallis test koji ne zahtjeva pretostavku normalnosti i testira nul hipotezu o jednakosti medijana među kategorijama podataka.
+
+```{r}
+kruskal.test(AvgTime ~ FavGenre)
+
+kruskal.test(AvgTime_t ~ FavGenre_t)
+```
+
+Rezultat nam ukazuje na to da se barem jedna grupa razlikuje od drugih po medijanu u nepodrezanom datasetu na razini značajnosti od 5%, no da bismo bili sigurni da ovo nije greška, moramo detaljnije analizirati podatke.
+
+### Dunn Test
+
+Kako bi provjerili o kojim se skupinama radi, provodimo Dunn test. On nam za svaki par žanrova govori koliko se značajno razlikuju po srednjoj vrijednosti.
+
+```{r}
+dunnTest(AvgTime ~ FavGenre)
+```
+
+Rezultat pokazuje statistički značajnu razliku jedino između Jazz i pop žanrova na razini značajnosti od 10% sa P.adj vrijednosti od 0,099, te Jazz i Video game music skoro prelaze prag sa P.adj od 0,106.
+
+### Prikaz podataka u box dijagramima
+
+```{r}
+ggplot(data, aes(x = FavGenre, y = AvgTime, fill = FavGenre)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Avg Listening Time by Genre", y = "Listening Time (hours)", x = "Genre")
+
+
+ggplot(trimmed_data, aes(x = FavGenre_t, y = AvgTime_t, fill = FavGenre_t)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Avg Listening Time by Genre Trimmed", y = "Listening Time (hours)", x = "Genre")
+```
+
+## 5. Predviđanje dobi ispitanika
+
+Naš zadatak je pokušati pomoću podataka predvidjeti dob ispitanika.
+
+### Nekategorijske varijable
+
+Prvo ćemo promatrati sljedeće nekategorijske varijable:\
+
+```{r}
+names(ver2)[sapply(ver2, is.numeric)]
+```
+
+Kasnije ćemo se baviti frekvencijama slušanja.
+
+Idemo provjeriti možemo li nešto naslutiti iz grafova.
+
+```{r}
+plot(ver1$`Hours per day`, ver1$Age, main = "Scatter plot for Age ~ Hours per day")
+```
+
+```{r}
+plot(ver1$`Depression`, ver1$Age, main = "Scatter plot for Age ~ Depression")
+```
+
+Iz grafova se ne može primijetiti neka linearna ovisnost broja godina o nekoj karakteristici. No, svejedno ćemo pokušati napraviti linearne modele varijabli i provjeriti rezultate.
+
+```{r}
+ggplot(ver1, aes(x = `Hours per day` , y = Age)) + geom_point() + stat_smooth(method = "lm", se = FALSE, formula = y ~ x) + labs(
+    title = "Scatter plot with Linear Regression Line for Hours per day",
+    x = "Hours per day",
+    y = "Age"
+  )
+
+model <- lm(Age ~ `Hours per day`, data = ver1)
+
+summary(model)
+
+hist(model$residuals, main = "Histogram za reziduale Age ~ Hours per day")
+```
+
+```{r}
+ggplot(ver1, aes(x = `Depression` , y = Age)) + geom_point() + stat_smooth(method = "lm", se = FALSE, formula = y ~ x) + labs(
+    title = "Scatter plot with Linear Regression Line for Depression",
+    x = "Depression",
+    y = "Age"
+  )
+
+model <- lm(Age ~ `Depression`, data = ver1)
+
+summary(model)
+
+hist(model$residuals, main = "Histogram za reziduale Age ~ Depression")
+```
+
+Nažalost, modeli potvrđuju da se iz njih ne može iščitati neka linearna povezanost, štoviše, neke varijable čak imaju p-vrijednost veću od 0.05 te na značajnosti od alfa = 0.05 možemo reći da ne doprinose u predviđanju dobi ispitanika. Osim toga, reziduali modela se moraju ravnati po normalnoj razdiobi tako da bismo još morali provesti test normalnosti za reziduale.
+
+```{r}
+lillie.test(rstandard(model))
+```
+
+Vidimo da reziduali modela ne prolaze test normalnosti, što je još jedan problem.
+
+### Kategorijske varijable
+
+Idemo provjeriti ima li veza između broja godina i kategorijskih varijabli. Kategorijske varijable su *Primary streaming service* i *Fav genre*.
+
+```{r}
+ver1$`Primary streaming service` <- as.factor(ver1$`Primary streaming service`)
+ver1$`Fav genre` <- as.factor(ver1$`Fav genre`)
+ver1$Timestamp <- NULL
+
+
+ver2$`Primary streaming service` <- as.factor(ver2$`Primary streaming service`)
+ver2$`Fav genre` <- as.factor(ver2$`Fav genre`)
+ver2$Timestamp <- NULL
+ver2 <- ver2 %>% 
+  mutate(across(starts_with("Frequency"), ~ factor(., levels = c("Never", "Rarely", "Sometimes", "Very frequently"))))
+```
+
+```{r}
+ggplot(ver1, aes(x = `Primary streaming service`, y = Age)) + geom_boxplot() + labs(title = "Boxplot for Age ~ Primary streaming service") + theme_classic() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+ggplot(ver1, aes(x = `Fav genre`, y = Age)) + geom_boxplot() + labs(title = "Boxplot for Age ~ Fav genre") + theme_classic() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Nažalost, niti grafovi kategorijskih varijabli ne daju nam konkretan odgovor. Svejedno, pokušat ćemo napraviti linearni model obje kategorijske varijable.
+
+```{r}
+model <- lm(Age ~ `Primary streaming service`, data = ver1)
+
+summary(model)
+```
+
+```{r}
+model <- lm(Age ~ `Fav genre`, data = ver1)
+
+summary(model)
+```
+
+R-kvadrat vrijednosti ova dva modela su vrlo niske. Sve je jasnije da ćemo teško moći doći do kvalitetnog rezultata.
+
+### Frekvencije slušanja
+
+Frekvencije slušanja promatrat ćemo i kao nekategorijske varijable i kao kategorijske i onda izabrati ono što je ostvarilo bolje rezultate.
+
+Prvo ćemo ih promatrati kao nekategorijske varijable. U ovom slučaju kategorije *Never, Rarely, Sometimes* i *Very frequently* gledat ćemo kao brojeve 1, 2, 3 i 4. Napravit ćemo linearne modele za nekoliko žanrova.
+
+```{r}
+ggplot(ver1, aes(x = `Frequency [Classical]` , y = Age)) + geom_point() + stat_smooth(method = "lm", se = FALSE, formula = y ~ x) + labs(
+    title = "Scatter plot with Linear Regression Line for Frequency [Classical]",
+    x = "Frequency [Classical]",
+    y = "Age"
+  )
+
+model <- lm(Age ~ `Frequency [Classical]`, data = ver1)
+
+summary(model)
+```
+
+```{r}
+ggplot(ver1, aes(x = `Frequency [Video game music]` , y = Age)) + geom_point() + stat_smooth(method = "lm", se = FALSE, formula = y ~ x) + labs(
+    title = "Scatter plot with Linear Regression Line for Frequency [Video game music]",
+    x = "Frequency [Video game music]",
+    y = "Age"
+  )
+
+model <- lm(Age ~ `Frequency [Video game music]`, data = ver1)
+
+summary(model)
+```
+
+Opet ne ostvarujemo dobre rezultate. Sad ćemo ih promatrati kao kategorijske varijable. Za iste žanrove radit ćemo boxplotove.
+
+```{r}
+ggplot(ver2, aes(x = `Frequency [Classical]`, y = Age)) + geom_boxplot() + labs(title = "Boxplot for Age ~ Frequency [Classical]") + theme_classic() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+ggplot(ver2, aes(x = `Frequency [Video game music]`, y = Age)) + geom_boxplot() + labs(title = "Boxplot for Age ~ Frequency [Video game music]") + theme_classic() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+model <- lm(Age ~ `Frequency [Classical]`, data = ver2)
+
+summary(model)
+```
+
+```{r}
+model <- lm(Age ~ `Frequency [Video game music]`, data = ver2)
+
+summary(model)
+```
+
+Bolje rezultate pokazuje linearni model gdje frekvencije slušanja promatramo kao kategorijske varijable, ali ne za preznačajnu razliku jer u oba slučaja R kvadrat vrijednost nije velika.
+
+### Konačni pokušaj modela linearne regresije
+
+Usprkos svemu, provjeirt ćemo kakav linearni model ćemo dobiti kada sve (značajne) varijable skupimo u jedan model.
+
+```{r}
+ver3 <- ver2 %>% select(-`Music effects`, -`Hours per day`, -`While working`, -`Foreign languages`, -Composer)
+
+model <- lm(Age ~ ., data = ver3)
+
+summary(model)
+```
+
+Dobili smo model koji ima R-kvadrat vrijednost 0.372, veću nego kada gledamo svaku varijablu zasebno, no opet nedovoljno veliku da možemo zaključiti da na temelju ovog modela možemo predvidjeti dob ispitanika. Taj rezultat je očekivan iz razloga što svaki čovjek je različit i ne postoji određena pravilnost po kojoj možemo točno predvidjeti koliko godina neka osoba ima. Općenito, stvari koje imaju veze s ljudima i ljudskim karakteristikama teže je predvidjeti zbog ljudskog nepredviljivog ponašanja.
